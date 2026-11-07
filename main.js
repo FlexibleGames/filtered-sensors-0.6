@@ -29,7 +29,7 @@ function sensorFrame() {
 }
 
 function registerSensorStructure(id, name, description, sprite) {
-  api.structures.register({
+  const definition = {
     id,
     blockGridType: id,
     name,
@@ -41,12 +41,20 @@ function registerSensorStructure(id, name, description, sprite) {
     buildModes: [{ type: "single" }],
     variants: [{ id, angles: [0] }],
     shape: sensorFrame(),
+    defaultData: { allowed: [] },
     render: {
       imageName: sprite,
       size: { width: 16, height: 16 },
       ui: { outline: true },
     },
-  });
+  };
+  try {
+    api.structures.register(definition);
+  } catch (error) {
+    console.warn("[Filtered Sensors] Could not use the logic menu (" + error.message + "). Using logistics.");
+    definition.categoryKey = "logistics";
+    api.structures.register(definition);
+  }
 }
 
 function interiorCells(structure) {
@@ -282,38 +290,72 @@ function registerFilterableSensors() {
   setInterval(publishSensorOutput, 100);
 }
 
+function unlockSensors() {
+  try { api.player.buildings.unlockByType(PRESENCE_SENSOR_ID); } catch (error) {}
+  try { api.player.buildings.unlockByType(FULL_SENSOR_ID); } catch (error) {}
+}
+
 function registerAdvancedSignalsTech() {
   const parentId = sandkit.enums && sandkit.enums.Tech && sandkit.enums.Tech.SignalControls;
-  if (parentId == null) {
-    console.warn("[Filtered Sensors] Signal Controls tech was not found. Sensors unlocked.");
-    try { api.player.buildings.unlockByType(PRESENCE_SENSOR_ID); } catch (error) {}
-    try { api.player.buildings.unlockByType(FULL_SENSOR_ID); } catch (error) {}
+  try {
+    api.i18n.register("en", {
+      "tech|advancedSignals|name": "Advanced Signals",
+      "tech|advancedSignals|description": "Unlocks filterable presence and full-tile sensors.",
+    });
+  } catch (error) {}
+
+  if (safe(() => api.tech.getDefinitionById("advancedSignals"))) {
+    console.log("[Filtered Sensors] Advanced Signals is already registered.");
     return;
   }
 
-  if (safe(() => api.tech.getDefinitionById("advancedSignals"))) return;
+  if (parentId == null) {
+    console.error("[Filtered Sensors] Signal Controls tech id was missing. Sensors unlocked without research.");
+    unlockSensors();
+    return;
+  }
 
   const parent = safe(() => api.tech.getDefinitionById(parentId)) || {};
-  safe(() => api.i18n.register("en", {
-    "tech|advancedSignals|name": "Advanced Signals",
-    "tech|advancedSignals|description": "Unlocks filterable presence and full-tile sensors.",
-  }));
+  const definition = {
+    name: "Advanced Signals",
+    nameKey: "tech|advancedSignals|name",
+    description: "Unlocks filterable presence and full-tile sensors.",
+    descriptionKey: "tech|advancedSignals|description",
+    cost: 50,
+    currencyType: parent.currencyType || "ticket",
+    requires: [parentId],
+    unlocks: { structures: [PRESENCE_SENSOR_ID, FULL_SENSOR_ID] },
+  };
+  if (parent.branch) definition.branch = parent.branch;
 
-  try {
-    const definition = {
-      nameKey: "tech|advancedSignals|name",
-      descriptionKey: "tech|advancedSignals|description",
-      cost: 50,
-      currencyType: parent.currencyType || "ticket",
-      requires: [parentId],
-      unlocks: { structures: [PRESENCE_SENSOR_ID, FULL_SENSOR_ID] },
-    };
-    if (parent.branch) definition.branch = parent.branch;
-    api.tech.registerNode("advancedSignals", definition, { parentId });
-  } catch (error) {
-    console.error("[Filtered Sensors] Advanced Signals research failed:", error);
-    try { api.player.buildings.unlockByType(PRESENCE_SENSOR_ID); } catch (unlockError) {}
-    try { api.player.buildings.unlockByType(FULL_SENSOR_ID); } catch (unlockError) {}
+  const spots = [null];
+  const base = safe(() => api.tech.getGridPositionById(parentId));
+  if (base && Number.isInteger(base.row) && Number.isInteger(base.col)) {
+    spots.length = 0;
+    for (let row = base.row + 1; row <= base.row + 3; row++) {
+      for (let col = base.col; col <= base.col + 5; col++) spots.push({ row, col });
+    }
+    spots.push(null);
+  }
+
+  let registered = false;
+  let lastError = null;
+  for (const preferredPosition of spots) {
+    try {
+      const options = { parentId };
+      if (preferredPosition) options.preferredPosition = preferredPosition;
+      api.tech.registerNode("advancedSignals", definition, options);
+      registered = true;
+      console.log("[Filtered Sensors] Advanced Signals added beside Signal Controls.", preferredPosition || "auto");
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!registered) {
+    console.error("[Filtered Sensors] Advanced Signals was not added:", lastError);
+    unlockSensors();
   }
 }
 
@@ -327,14 +369,21 @@ function safe(fn, fallback = null) {
 }
 
 async function loadImage(spriteName) {
-  await api.sprites.loadFromMod(spriteName, "assets/" + spriteName + ".png");
+  try {
+    await api.sprites.loadFromMod(spriteName, "assets/" + spriteName + ".png");
+  } catch (error) {
+    console.warn("[Filtered Sensors] Sprite failed to load: " + spriteName, error);
+  }
 }
+
+// Register during script load. Waiting on sprites used to run this after
+// the game had already built the research list, so nothing showed up.
+registerFilterableSensors();
+registerAdvancedSignalsTech();
 
 async function initialize() {
   await loadImage(PRESENCE_SENSOR_SPRITE);
   await loadImage(FULL_SENSOR_SPRITE);
-  registerFilterableSensors();
-  registerAdvancedSignalsTech();
   console.log("[Filtered Sensors] loaded");
 }
 
