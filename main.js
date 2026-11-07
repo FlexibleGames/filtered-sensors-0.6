@@ -9,7 +9,12 @@ const PRESENCE_SENSOR_ID = "filteredPresenceSensor";
 const FULL_SENSOR_ID = "filteredFullSensor";
 const PRESENCE_SENSOR_SPRITE = "filtered_presence_sensor";
 const FULL_SENSOR_SPRITE = "filtered_full_sensor";
-const SENSOR_SIZE = 4;
+let sensorShape = [
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+  [0, 0, 0, 0],
+];
 
 let sensorEditor = null;
 const sensorUiListeners = new Set();
@@ -20,47 +25,82 @@ function setSensorEditor(value) {
 }
 
 function sensorFrame() {
-  return [
-    [1, 1, 1, 1],
-    [1, 0, 0, 1],
-    [1, 0, 0, 1],
-    [1, 1, 1, 1],
-  ];
+  return sensorShape.map((row) => row.slice());
+}
+
+function vanillaSensorDefinition() {
+  const ids = [];
+  const structureTypes = sandkit.enums && sandkit.enums.StructureType;
+  if (structureTypes) {
+    Object.keys(structureTypes).forEach((key) => {
+      if (/sensor|presence|pulse/i.test(key)) {
+        ids.push(structureTypes[key]);
+        ids.push(key);
+      }
+    });
+  }
+  [
+    "presenceSensor",
+    "signalSensor",
+    "pulseSensor",
+    "sensorPresence",
+    "sensorSignal",
+    "sensorPulse",
+  ].forEach((id) => ids.push(id));
+
+  for (const id of ids) {
+    const def = safe(() => api.structures.getDefinitionByType(id));
+    if (!def || !def.shape) continue;
+    console.log("[Filtered Sensors] Using vanilla sensor footprint from " + id, JSON.stringify({
+      shape: def.shape,
+      categoryKey: def.categoryKey,
+      rejectWhenBlocked: def.rejectWhenBlocked,
+    }));
+    return def;
+  }
+  console.warn("[Filtered Sensors] No vanilla sensor definition found. Using a non-solid 4x4 footprint.");
+  return null;
 }
 
 function registerSensorStructure(id, name, description, sprite) {
+  const vanilla = vanillaSensorDefinition();
+  if (vanilla && vanilla.shape) sensorShape = vanilla.shape;
+  const shape = sensorFrame();
+  const raw = shape.some((row) => row.some((cell) => cell !== 0 && cell !== 1));
   const definition = {
     id,
     blockGridType: id,
     name,
     description,
-    categoryKey: "logic",
+    categoryKey: (vanilla && vanilla.categoryKey) || "logic",
     order: 30,
     alwaysUnlocked: false,
-    rejectWhenBlocked: true,
+    rejectWhenBlocked: false,
     buildModes: [{ type: "single" }],
     variants: [{ id, angles: [0] }],
-    shape: sensorFrame(),
+    shape,
     defaultData: { allowed: [] },
     render: {
       imageName: sprite,
-      size: { width: 16, height: 16 },
+      size: { width: shape[0].length * 4, height: shape.length * 4 },
       ui: { outline: true },
     },
   };
   try {
-    api.structures.register(definition);
+    api.structures.register(definition, raw ? { useRawShape: true } : undefined);
   } catch (error) {
-    console.warn("[Filtered Sensors] Could not use the logic menu (" + error.message + "). Using logistics.");
+    console.warn("[Filtered Sensors] Could not use the logic menu (" + (error && error.message) + "). Using logistics.");
     definition.categoryKey = "logistics";
-    api.structures.register(definition);
+    api.structures.register(definition, raw ? { useRawShape: true } : undefined);
   }
 }
 
-function interiorCells(structure) {
+function sensorCells(structure) {
   const cells = [];
-  for (let dy = 1; dy < SENSOR_SIZE - 1; dy++) {
-    for (let dx = 1; dx < SENSOR_SIZE - 1; dx++) {
+  const height = sensorShape.length;
+  const width = sensorShape[0].length;
+  for (let dy = 0; dy < height; dy++) {
+    for (let dx = 0; dx < width; dx++) {
       cells.push({ x: structure.x + dx, y: structure.y + dy });
     }
   }
@@ -86,7 +126,7 @@ function cellMatchesFilter(cell, allowed) {
 
 function sensorIsOn(structure, mode) {
   const allowed = allowedElements(structure);
-  const cells = interiorCells(structure);
+  const cells = sensorCells(structure);
   if (!allowed.length || !cells.length) return false;
   if (mode === "full") return cells.every((cell) => cellMatchesFilter(cell, allowed));
   return cells.some((cell) => cellMatchesFilter(cell, allowed));
@@ -290,13 +330,25 @@ function registerFilterableSensors() {
   setInterval(publishSensorOutput, 100);
 }
 
+function lockSensors() {
+  try { api.player.buildings.removeById(PRESENCE_SENSOR_ID); } catch (error) {}
+  try { api.player.buildings.removeById(FULL_SENSOR_ID); } catch (error) {}
+}
+
 function unlockSensors() {
   try { api.player.buildings.unlockByType(PRESENCE_SENSOR_ID); } catch (error) {}
   try { api.player.buildings.unlockByType(FULL_SENSOR_ID); } catch (error) {}
 }
 
+function signalControlsId() {
+  const fromEnum = sandkit.enums && sandkit.enums.Tech && sandkit.enums.Tech.SignalControls;
+  if (fromEnum != null && safe(() => api.tech.getDefinitionById(fromEnum))) return fromEnum;
+  if (safe(() => api.tech.getDefinitionById("SignalControls"))) return "SignalControls";
+  return fromEnum;
+}
+
 function registerAdvancedSignalsTech() {
-  const parentId = sandkit.enums && sandkit.enums.Tech && sandkit.enums.Tech.SignalControls;
+  const techId = "advancedSignals";
   try {
     api.i18n.register("en", {
       "tech|advancedSignals|name": "Advanced Signals",
@@ -304,59 +356,45 @@ function registerAdvancedSignalsTech() {
     });
   } catch (error) {}
 
-  if (safe(() => api.tech.getDefinitionById("advancedSignals"))) {
-    console.log("[Filtered Sensors] Advanced Signals is already registered.");
-    return;
-  }
-
-  if (parentId == null) {
-    console.error("[Filtered Sensors] Signal Controls tech id was missing. Sensors unlocked without research.");
-    unlockSensors();
-    return;
-  }
-
-  const parent = safe(() => api.tech.getDefinitionById(parentId)) || {};
-  const definition = {
-    name: "Advanced Signals",
-    nameKey: "tech|advancedSignals|name",
-    description: "Unlocks filterable presence and full-tile sensors.",
-    descriptionKey: "tech|advancedSignals|description",
-    cost: 50,
-    currencyType: parent.currencyType || "ticket",
-    requires: [parentId],
-    unlocks: { structures: [PRESENCE_SENSOR_ID, FULL_SENSOR_ID] },
-  };
-  if (parent.branch) definition.branch = parent.branch;
-
-  const spots = [null];
-  const base = safe(() => api.tech.getGridPositionById(parentId));
-  if (base && Number.isInteger(base.row) && Number.isInteger(base.col)) {
-    spots.length = 0;
-    for (let row = base.row + 1; row <= base.row + 3; row++) {
-      for (let col = base.col; col <= base.col + 5; col++) spots.push({ row, col });
+  const parentId = signalControlsId();
+  if (!safe(() => api.tech.getDefinitionById(techId))) {
+    if (parentId == null) {
+      console.error("[Filtered Sensors] Signal Controls was not found. Sensors left unlocked.");
+      unlockSensors();
+      return;
     }
-    spots.push(null);
-  }
+    const parent = safe(() => api.tech.getDefinitionById(parentId)) || {};
+    const definition = {
+      name: "Advanced Signals",
+      nameKey: "tech|advancedSignals|name",
+      description: "Unlocks filterable presence and full-tile sensors.",
+      descriptionKey: "tech|advancedSignals|description",
+      cost: 50,
+      currencyType: parent.currencyType || "ticket",
+      requires: [parentId],
+      unlocks: { structures: [PRESENCE_SENSOR_ID, FULL_SENSOR_ID] },
+    };
+    if (parent.branch) definition.branch = parent.branch;
 
-  let registered = false;
-  let lastError = null;
-  for (const preferredPosition of spots) {
     try {
-      const options = { parentId };
-      if (preferredPosition) options.preferredPosition = preferredPosition;
-      api.tech.registerNode("advancedSignals", definition, options);
-      registered = true;
-      console.log("[Filtered Sensors] Advanced Signals added beside Signal Controls.", preferredPosition || "auto");
-      break;
+      api.tech.registerNode(techId, definition, { parentId });
+      console.log("[Filtered Sensors] Advanced Signals placed under Signal Controls.");
     } catch (error) {
-      lastError = error;
+      console.warn("[Filtered Sensors] Could not place Advanced Signals on the grid:", error);
+    }
+    if (!safe(() => api.tech.getDefinitionById(techId))) {
+      try {
+        api.tech.registerDefinition(techId, definition);
+        console.log("[Filtered Sensors] Advanced Signals registered as a ticket tech.");
+      } catch (error) {
+        console.error("[Filtered Sensors] Advanced Signals was not created:", error);
+        unlockSensors();
+        return;
+      }
     }
   }
 
-  if (!registered) {
-    console.error("[Filtered Sensors] Advanced Signals was not added:", lastError);
-    unlockSensors();
-  }
+  if (!safe(() => api.tech.isResearchedById(techId))) lockSensors();
 }
 
 
