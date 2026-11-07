@@ -1,0 +1,15 @@
+{
+  "manifestVersion": 1,
+  "id": "fg.filtered_sensors",
+  "name": "Filtered Sensors",
+  "version": "1.0.0",
+  "apiVersion": 1,
+  "entry": "main.js",
+  "description": "Filterable presence and full-tile sensors. Research Advanced Signals in the Conservatory after Signal Controls.",
+  "author": "Flexible Games",
+  "gameVersion": {
+    "minimum": "0.6.0"
+  },
+  "dependencies": [],
+  "loadOrder": 0
+}
